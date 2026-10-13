@@ -226,4 +226,4 @@ No test files are currently included in the repository.
 
 ## License
 
-No license file is included in the current project snapshot. Add a `LICENSE` file before distributing the project under an open-source license.
+Open-source under the MIT License.
