@@ -28,6 +28,7 @@ func main() {
 		redis_addr = "redis:6379"
 	}
 
+	// Initialize connection to Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     redis_addr, // use default Addr
 		Password: "",         // no password set
@@ -38,11 +39,14 @@ func main() {
 	fmt.Println(pong, err)
 
 	hub := socket.NewHub()
+	// WebSocket loop
 	go hub.Run()
 
 	ps := pubsub.NewPubSub(rdb, hub, "events:broadcast")
+	// Starts the Redis subscriber listener
 	go ps.Start(ctx)
 
+	// Set up rate limiting middleware configured for 10 requests per second per IP.
 	ratelimiter := limiter.NewLimiter(rdb, 10, time.Second)
 
 	metricsHandler := cache.NewMetricsHandler(rdb)
@@ -53,6 +57,8 @@ func main() {
 		socket.ServeWs(hub, w, r)
 	})
 
+	// POST /api/v1/broadcast:
+	// HTTP endpoint to publish events across all nodes.
 	mux.HandleFunc("POST /api/v1/broadcast", func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -72,5 +78,6 @@ func main() {
 
 	mux.Handle("GET /api/v1/metrics/{id}", metricsHandler)
 
+	// Wrap all routes in ratelimiter
 	http.ListenAndServe(":"+port, ratelimiter.Middleware(mux))
 }

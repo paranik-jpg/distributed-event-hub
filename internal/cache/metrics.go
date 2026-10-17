@@ -44,7 +44,7 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := "metrics:" + id
-	val, err := h.rdb.Get(r.Context(), key).Result()
+	val, err := h.rdb.Get(r.Context(), key).Result() // Query Redis
 
 	if err == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -57,6 +57,8 @@ func (h *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metric := fetchFromDB(id)
 		payload, _ := json.Marshal(metric)
 
+		// keys do not expire at the exact same second,
+		// avoiding thundering herd problems on the backend database.
 		jitter := time.Duration(rand.Intn(10)) * time.Second
 		ttl := 60*time.Second + jitter
 

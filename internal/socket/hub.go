@@ -33,6 +33,7 @@ func (h *Hub) Run() {
 				delete(h.clients, client)
 				close(client.send)
 			}
+		// Dequeue broadcast and distribute to each connected client's send channel
 		case message := <-h.Broadcast:
 			for client := range h.clients {
 				select {

@@ -98,6 +98,9 @@ func (c *Client) writePump() {
 				return
 			}
 
+			// w is an io.WriteCloser
+			// All data written to w prior to w.Close()
+			// is packaged into a single WebSocket message / frame.
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return
@@ -111,6 +114,8 @@ func (c *Client) writePump() {
 				w.Write(<-c.send)
 			}
 
+			// Flushe the entire accumulated payload
+			// as one single WebSocket network frame.
 			if err := w.Close(); err != nil {
 				return
 			}

@@ -1,5 +1,6 @@
 services:
   redis:
+    ## Run 1 shared Redis 7 Alpine container
     image: redis:7-alpine
     ports:
       - "6379:6379"
