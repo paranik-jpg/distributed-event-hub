@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var testDBURL = "postgres://postgres:password@localhost:5433/event_hub?sslmode=disable"
+var testDBURL = "postgres://postgres:password@localhost:5432/event_hub?sslmode=disable"
 
 func getTestPool(t *testing.T) *pgxpool.Pool {
 	if url := os.Getenv("TEST_DATABASE_URL"); url != "" {

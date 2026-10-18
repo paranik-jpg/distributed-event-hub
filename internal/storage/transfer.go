@@ -229,8 +229,8 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 	stagedEvent, err := StageOutboxEvent(
 		ctx,
 		tx,
-		"TRANSFER",
-		transfer.ID.String(),
+		"TRANSFER",           // aggregate_type
+		transfer.ID.String(), // <--- HERE! aggregate_id is set to transfer.ID
 		"TRANSFER_COMPLETED",
 		outboxPayload,
 	)

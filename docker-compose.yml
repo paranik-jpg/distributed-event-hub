@@ -18,7 +18,7 @@ services:
       - POSTGRES_PASSWORD=password
       - POSTGRES_DB=event_hub
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       ## Automatically execute any .sql scripts found in /docker-entrypoint-initdb.d on first initialization.
