@@ -11,6 +11,25 @@ services:
       retries: 5
       start_period: 10s
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=event_hub
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      ## Automatically execute any .sql scripts found in /docker-entrypoint-initdb.d on first initialization.
+      - ./db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d event_hub"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
   app_1:
     build:
       context: .
@@ -21,9 +40,12 @@ services:
       - PORT=8080
       - REDIS_ADDR=redis:6379
       - INSTANCE_ID=app-1
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/event_hub?sslmode=disable
     depends_on:
       redis:
-          condition: service_healthy
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
 
   app_2:
     build:
@@ -35,6 +57,23 @@ services:
       - PORT=8080
       - REDIS_ADDR=redis:6379
       - INSTANCE_ID=app-2
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/event_hub?sslmode=disable
     depends_on:
       redis:
-          condition: service_healthy
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      ## Prometheus web dashboard
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro ## ro => Read-Only Volume
+    depends_on:
+      - app_1
+      - app_2
+
+volumes:
+  postgres_data:
