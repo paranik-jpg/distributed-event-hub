@@ -9,6 +9,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/redis/go-redis/v9"
+
+	"distributed-event-hub/internal/telemetry"
 )
 
 var (
@@ -21,6 +23,7 @@ type publishRequest struct {
 	aggregateID string
 	eventID     string
 	payload     []byte
+	createdAt   time.Time
 	errChan     chan error
 	ctx         context.Context
 }
@@ -96,6 +99,7 @@ func (p *AdaptiveBatchProducer) PublishEvent(
 	aggregateID string,
 	eventID string,
 	payload []byte,
+	createdAt time.Time,
 ) error {
 	// A private errChan (our walkie-talkie).
 	errChan := make(chan error, 1)
@@ -105,6 +109,7 @@ func (p *AdaptiveBatchProducer) PublishEvent(
 		aggregateID: aggregateID,
 		eventID:     eventID,
 		payload:     payload,
+		createdAt:   createdAt,
 		errChan:     errChan,
 		ctx:         ctx,
 	}
@@ -200,12 +205,19 @@ func (p *AdaptiveBatchProducer) executePipeline(batch []publishRequest) {
 				"event_id":     req.eventID,
 				"aggregate_id": req.aggregateID,
 				"payload":      req.payload,
+				"created_at":   req.createdAt.UTC().Format(time.RFC3339Nano), // Formatted using time.RFC3339Nano so nanosecond precision is preserved across network serialization.
 			},
 		})
 	}
 
 	// 2. Transmit the entire pipeline to Redis in ONE single network round-trip!
 	_, pipeErr := pipe.Exec(ctx)
+
+	// 2b. Track Pipeline Batch Size Histogram (observe how close batches get to the 500-item ceiling)
+	if len(batch) > 0 {
+		// batch[0] retrieves that shared base stream name cleanly and efficiently
+		telemetry.PipelineBatchSizeHistogram.WithLabelValues(batch[0].baseStream).Observe(float64(len(batch)))
+	}
 
 	// 3. Unpack command results and notify respective caller error channels
 	for i, req := range batch {

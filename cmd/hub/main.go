@@ -8,16 +8,20 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"distributed-event-hub/internal/cache"
 	"distributed-event-hub/internal/limiter"
-	"distributed-event-hub/internal/pubsub"
 	"distributed-event-hub/internal/relay"
 	"distributed-event-hub/internal/socket"
 	"distributed-event-hub/internal/storage"
 	"distributed-event-hub/internal/streaming"
+	"distributed-event-hub/internal/telemetry"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	// promhttp => The HTTP handler that translates Prometheus metrics into the scrape text format.
 	"github.com/redis/go-redis/v9"
 )
 
@@ -25,9 +29,8 @@ var (
 	port        string = os.Getenv("PORT")
 	redisAddr   string = os.Getenv("REDIS_ADDR")
 	databaseURL string = os.Getenv("DATABASE_URL")
+	instanceID  string = os.Getenv("INSTANCE_ID")
 )
-
-var ctx = context.Background()
 
 func main() {
 	if port == "" {
@@ -39,8 +42,15 @@ func main() {
 	if databaseURL == "" {
 		databaseURL = "postgres://postgres:password@localhost:5432/event_hub?sslmode=disable"
 	}
+	if instanceID == "" {
+		instanceID = "hub-node-default"
+	}
 
-	// 1. Initialize Redis Client
+	// 1. Root Context with Signal Trap for Coordinated Graceful Teardown
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 2. Initialize Redis Client
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     redisAddr,
 		Password: "",
@@ -51,42 +61,38 @@ func main() {
 	if err != nil {
 		slog.Error("Failed to connect to Redis", "error", err)
 	} else {
-		slog.Info("Connected to Redis", "response", pong)
+		slog.Info("Connected to Redis successfully", "response", pong)
 	}
 
-	// 2. Initialize PostgreSQL Connection Pool (pgxpool)
+	// 3. Initialize PostgreSQL Connection Pool (pgxpool)
 	pool, err := storage.NewPool(ctx, databaseURL)
 	if err != nil {
 		slog.Error("Fatal: failed to initialize PostgreSQL connection pool", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
 	slog.Info("Connected to PostgreSQL connection pool successfully")
 
-	// 3. Initialize Storage Repository
+	// 4. Initialize Storage Repository
 	repo := storage.NewRepository(pool)
 
-	// 4. Initialize WebSocket Hub
+	// 5. Initialize In-Memory WebSocket Hub
 	hub := socket.NewHub()
 	go hub.Run()
 
-	// 5. Initialize Pub/Sub listener for real-time WebSocket distribution
-	ps := pubsub.NewPubSub(rdb, hub, "events:broadcast")
-	go ps.Start(ctx)
-
-	// 6. Initialize Adaptive Micro-Batching Stream Producer (500 items or 5ms flush window, MAXLEN ~ 100k)
+	// 6. Initialize Adaptive Micro-Batching Stream Producer
+	// Connects the outbox relay directly to the partitioned stream producer
 	streamPublisher := streaming.NewAdaptiveBatchProducer(
 		rdb,
-		4,                    // 4 parallel partition streams
-		500,                  // 500-item micro-batch threshold
-		5*time.Millisecond,   // 5ms elapsed window
-		100000,               // MAXLEN ~ 100000 approximate capping
+		4,                  // 4 parallel partition streams
+		500,                // 500-item micro-batch threshold
+		5*time.Millisecond, // 5ms elapsed window
+		100000,             // MAXLEN ~ 100000 approximate capping
 	)
-	defer streamPublisher.Close()
 
+	// 7. Initialize and start OutboxPoller (Relay Worker) as background goroutine
 	outboxPoller := relay.NewOutboxPoller(
 		pool,
-		streamPublisher,
+		streamPublisher,     // <--- We inject AdaptiveBatchProducer!
 		100,                 // batch size
 		50*time.Millisecond, // polling interval
 		"events:transfers",  // Base Redis stream key
@@ -97,10 +103,36 @@ func main() {
 		}
 	}()
 
-	// 7. Rate limiter middleware (10 requests/sec per IP)
+	// 8. Initialize Dual-Loop Consumer Group Engine (replaces legacy listener.go)
+	// Consumes events from Redis Streams and forwards them to hub.Broadcast for live WebSocket emission
+	consumerGroup := streaming.NewStreamConsumerGroup(
+		rdb,
+		hub,
+		"events:transfers",   // Base stream
+		"hub-consumer-group", // Consumer group name
+		instanceID,           // Unique consumer name (e.g., app-1 or app-2)
+		4,                    // 4 partitions
+	)
+	go func() {
+		if err := consumerGroup.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("Stream consumer group terminated with error", "error", err)
+		}
+	}()
+
+	// 8b. Initialize Prometheus Lag Exporter (monitors consumer lag per stream partition)
+	lagExporter := telemetry.NewLagExporter(
+		rdb,
+		"events:transfers",
+		"hub-consumer-group",
+		4,
+		2*time.Second,
+	)
+	lagExporter.Start(ctx)
+
+	// 9. Rate limiter middleware (10 requests/sec per IP)
 	ratelimiter := limiter.NewLimiter(rdb, 10, time.Second)
 
-	// 8. HTTP Routing
+	// 10. HTTP Routing
 	metricsHandler := cache.NewMetricsHandler(rdb)
 	mux := http.NewServeMux()
 
@@ -150,7 +182,7 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Deprecated: Unauthenticated raw broadcast route (returns 410 Gone with migration guidance)
+	// Deprecated route guidance
 	mux.HandleFunc("POST /api/v1/broadcast", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusGone) // HTTP 410 Gone
@@ -160,10 +192,54 @@ func main() {
 	// Cached Metrics endpoint
 	mux.Handle("GET /api/v1/metrics/{id}", metricsHandler)
 
-	// Wrap entire mux with distributed rate limiter
+	// Prometheus Metrics Scrape Endpoint
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// 11. Start HTTP Server in a separate goroutine so main can wait for OS signals
 	serverAddr := ":" + port
-	slog.Info(fmt.Sprintf("HTTP Server listening on %s", serverAddr))
-	if err := http.ListenAndServe(serverAddr, ratelimiter.Middleware(mux)); err != nil {
-		slog.Error("Server terminated", "error", err)
+	server := &http.Server{
+		Addr:    serverAddr,
+		Handler: ratelimiter.Middleware(mux),
 	}
+
+	go func() {
+		slog.Info(fmt.Sprintf("HTTP Server listening on %s", serverAddr))
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("HTTP server failed", "error", err)
+		}
+	}()
+
+	// =========================================================================
+	// 12. COORDINATED GRACEFUL TEARDOWN
+	// =========================================================================
+	<-ctx.Done() // Block until SIGINT or SIGTERM arrives
+	slog.Info("Shutdown signal received: initiating coordinated graceful teardown...")
+
+	// Create a hard 10-second timeout for the graceful shutdown phase
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	// Step A: Stop accepting new HTTP requests and finish in-flight requests
+	slog.Info("Teardown Step A: Shutting down HTTP server...")
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Error during HTTP server shutdown", "error", err)
+	}
+
+	// Step B: Flush all active producer micro-batch pipelines to Redis
+	slog.Info("Teardown Step B: Flushing active stream producer pipelines...")
+	streamPublisher.Close()
+	lagExporter.Stop()
+
+	// Step C: Allow background outbox poller and consumer groups to exit (triggered by ctx cancellation)
+	slog.Info("Teardown Step C: Draining consumer group worker pools and outbox poller...")
+	time.Sleep(500 * time.Millisecond) // Allow active in-flight worker tasks to drain and send XACK
+
+	// Step D: Close Redis and PostgreSQL connection pools
+	slog.Info("Teardown Step D: Closing database and Redis connection pools...")
+	pool.Close()
+	if err := rdb.Close(); err != nil {
+		slog.Error("Error closing Redis client", "error", err)
+	}
+
+	slog.Info("Graceful teardown completed successfully. Goodbye!")
 }

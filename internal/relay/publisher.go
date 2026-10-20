@@ -1,8 +1,11 @@
+// The code in this file(publisher.go) is not executed by our server.
+// It is dormant/idle (used only for simple tests).
 package relay
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/redis/go-redis/v9"
@@ -23,7 +26,7 @@ func NewRedisStreamPublisher(rdb *redis.Client) *RedisStreamPublisher {
 }
 
 // PublishEvent appends the serialized event to the partitioned Redis Stream via XADD.
-func (p *RedisStreamPublisher) PublishEvent(ctx context.Context, baseStream string, aggregateID string, eventID string, payload []byte) error {
+func (p *RedisStreamPublisher) PublishEvent(ctx context.Context, baseStream string, aggregateID string, eventID string, payload []byte, createdAt time.Time) error {
 	partitionID := xxhash.Sum64String(aggregateID) % uint64(p.partitionCount)
 	streamKey := fmt.Sprintf("%s:%d", baseStream, partitionID)
 
@@ -33,7 +36,7 @@ func (p *RedisStreamPublisher) PublishEvent(ctx context.Context, baseStream stri
 			"event_id":     eventID,
 			"aggregate_id": aggregateID,
 			"payload":      payload,
+			"created_at":   createdAt.UTC().Format(time.RFC3339Nano),
 		},
 	}).Err()
 }
-

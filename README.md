@@ -1,171 +1,217 @@
 # Distributed Event Hub
 
-A lightweight distributed event-broadcasting service written in Go. It uses **WebSockets** for connected clients and **Redis Pub/Sub** to propagate events between multiple application instances. Redis is also used for request rate limiting and caching metric responses.
+An enterprise-grade, event-driven financial ledger and streaming hub written in Go. It combines an **ACID double-entry ledger** in PostgreSQL with the **Transactional Outbox Pattern**, deterministic stream partitioning via **Redis Streams**, fault-tolerant **Dual-Loop Consumer Groups** (active intake + crash-recovery auto-claim janitor), poison-pill **Dead-Letter Queue (DLQ) isolation**, and real-time **WebSocket broadcasting** instrumented with **Prometheus**.
 
-## Features
+---
 
-- **WebSocket clients** — connect to `/ws` to receive broadcast messages.
-- **Cross-instance broadcasting** — publish an event through one instance; Redis Pub/Sub distributes it to subscribed instances.
-- **HTTP broadcast API** — publish raw request-body data as an event.
-- **Redis-backed rate limiting** — limits requests by client IP using a Redis Lua script.
-- **Metric response caching** — caches metric responses in Redis with a time-to-live.
-- **Docker Compose setup** — runs Redis and two application instances locally.
-
-## Architecture
+## Architecture Overview
 
 ```mermaid
-flowchart LR
-    ClientA[HTTP Client] --> App1[Hub Instance 1]
-    ClientB[WebSocket Client] <--> App1
-    ClientC[WebSocket Client] <--> App2[Hub Instance 2]
-    ClientD[HTTP Client] --> App2
-    App1 <--> Redis[(Redis)]
-    App2 <--> Redis
-    Redis -. Pub/Sub events .-> App1
-    Redis -. Pub/Sub events .-> App2
+flowchart TD
+    Client[HTTP Client / Frontend] -->|POST /api/v1/transfers| Hub[Hub Instance]
+    
+    subgraph PostgreSQL [ACID PostgreSQL Ledger]
+        Tx[Atomic Transaction]
+        Tx -->|SELECT ... FOR NO KEY UPDATE| Lock[Deterministic ID Lock]
+        Tx -->|Debit / Credit| Ledger[accounts & entries Ledger]
+        Tx -->|Atomic Stage| Outbox[outbox_events Table]
+    end
+    
+    Hub --> Tx
+
+    subgraph Relay [Outbox Relay Engine]
+        Poller[Outbox Poller: FOR UPDATE SKIP LOCKED] -->|Polls 30s Leases| Outbox
+        Producer[AdaptiveBatchProducer: xxhash % 4]
+        Poller --> Producer
+    end
+
+    subgraph RedisStreams [Partitioned Redis Streams Backplane]
+        P0[events:transfers:0]
+        P1[events:transfers:1]
+        P2[events:transfers:2]
+        P3[events:transfers:3]
+        DLQ[events:dlq:*]
+    end
+
+    Producer -->|Redis Pipeline XADD MAXLEN ~ 100k| RedisStreams
+
+    subgraph ConsumerEngine [Dual-Loop Consumer Group Engine]
+        LoopA[Loop A: Active Intake XREADGROUP >] --> WorkerPool[Worker Pool 10 Goroutines]
+        LoopB[Loop B: Janitor Ticker 5s] --> AutoClaim[XAUTOCLAIM MinIdle 30s]
+        LoopB --> DLQManager[DLQ Manager: XPENDING inspection]
+    end
+
+    RedisStreams --> LoopA
+    AutoClaim -. Adopt Stranded Messages .-> WorkerPool
+    DLQManager -->|Attempts >= 3: XADD + XACK + XDEL| DLQ
+
+    subgraph WebSockets [Real-Time Delivery]
+        WorkerPool -->|Broadcast & XACK| WSHub[socket.Hub: Non-Blocking Select]
+        WSHub --> WSClient[Connected WebSocket Clients /ws]
+    end
+
+    subgraph Telemetry [Observability]
+        Prometheus[Prometheus Scraper 5s] -->|GET /metrics| Hub
+    end
 ```
 
-Each application instance has its own in-memory WebSocket hub. Redis Pub/Sub carries published events between instances, allowing clients connected to different instances to receive broadcasts. Redis also stores rate-limit counters and cached metric payloads.
+---
+
+## Core Capabilities & Guarantees
+
+### 1. Zero Dual-Write Inconsistencies (Transactional Outbox)
+* Double-entry ledger updates (`accounts`, `entries`, `transfers`) and event staging (`outbox_events`) execute inside the exact same atomic database transaction.
+* If a balance check or overdraft fails, the outbox event rolls back cleanly with zero data drift.
+* Background `OutboxPoller` claims unhandled events using `SELECT ... FOR UPDATE SKIP LOCKED` with a 30-second lease timestamp (`locked_until`), enabling safe multi-instance concurrency without duplicate processing or row-lock contention.
+
+### 2. Deterministic Partitioning & Adaptive Micro-Batching
+* Events are partitioned across 4 parallel Redis Stream partitions (`events:transfers:0..3`) using 64-bit hashing: `xxhash(aggregateID) % 4`, ensuring strict per-account event ordering.
+* `AdaptiveBatchProducer` buffers publish operations in memory and dispatches them via Redis Pipelines on dual triggers: **500 items** or **5ms elapsed window**, achieving high throughput while guaranteeing low latency.
+* Streams use approximate memory capping (`MAXLEN ~ 100000`) for bounded $O(1)$ RAM eviction.
+
+### 3. Dual-Loop Consumer Groups & Crash Resilience
+* **Loop A (Active Intake):** Continuously calls `XREADGROUP ... >` with a 2s block, dispatching received messages to a 10-worker pool for WebSocket broadcasting and sending an explicit `XACK` upon completion.
+* **Loop B (Orphan Adoption Janitor):** Patrols every 5s using `XAUTOCLAIM` with `MinIdle = 30s`. If a container dies (`SIGKILL`), unacknowledged messages in its Pending Entries List (PEL) are automatically adopted by surviving alive nodes with zero message loss.
+
+### 4. Dead-Letter Queue (DLQ) & Poison-Pill Isolation
+* Inspects the Pending Entries List using `XPENDING - + 50`.
+* If an event's delivery attempts reach the poison-pill threshold (`retry_count >= 3`), it executes an atomic pipeline:
+  1. `XADD` to `events:dlq:{stream}` with rich diagnostics (original ID, payload, failure reason, timestamp).
+  2. `XACK` on the active consumer group to clear it from the PEL.
+  3. `XDEL` on the source stream to prevent memory leaks and unhandled consumer panics.
+
+### 5. Slow-Consumer Isolation
+* WebSocket outbound queues (`client.send`) are buffered at 256 items.
+* Message fan-out uses non-blocking Go channel selects. If a slow or paused client saturates its buffer, the hub immediately closes the slow socket and evicts it without blocking healthy peer connections or inflating server memory.
+
+### 6. Prometheus Observability Suite
+Exposes real-time streaming telemetry on `GET /metrics`:
+* `eventhub_streaming_consumer_lag` (Gauge): Total unread stream entries plus unacknowledged in-flight PEL entries per partition and group.
+* `eventhub_streaming_dispatch_latency_seconds` (Histogram): End-to-end latency from PostgreSQL `outbox_events.created_at` to consumer worker `XACK`.
+* `eventhub_streaming_pipeline_batch_size` (Histogram): Distribution of micro-batch sizes flushed to Redis Pipelines.
+* `eventhub_streaming_dlq_messages_total` (Counter): Cumulative count and rate of poison pills isolated into Dead-Letter Queues.
+
+### 7. Coordinated Graceful Teardown
+Binds OS interrupt signals (`SIGINT`, `SIGTERM`) to trigger an ordered 4-step shutdown:
+1. **Step A:** Stop accepting new HTTP requests (`server.Shutdown`).
+2. **Step B:** Flush all active producer micro-batch pipelines to Redis and stop telemetry exporters (`streamPublisher.Close()`, `lagExporter.Stop()`).
+3. **Step C:** Allow background pollers and worker pools to drain in-flight messages and send pending `XACK`s.
+4. **Step D:** Safely close Redis (`rdb.Close()`) and PostgreSQL connection pools (`pool.Close()`).
+
+---
 
 ## Tech Stack
 
-- Go
-- `net/http` for HTTP routing and handlers
-- `github.com/gorilla/websocket` for WebSocket connections
-- `github.com/redis/go-redis/v9` for Redis integration
-- Redis 7
-- Docker and Docker Compose
+* **Language:** Go
+* **Database:** PostgreSQL 16 (ACID Double-Entry Ledger & Transactional Outbox)
+* **Driver / Connection Pool:** `github.com/jackc/pgx/v5` (`pgxpool`)
+* **Streaming & Cache:** Redis 7 (Partitioned Streams, Consumer Groups, PEL, Lua Rate Limiter)
+* **Redis Client:** `github.com/redis/go-redis/v9`
+* **Partition Hashing:** `github.com/cespare/xxhash/v2`
+* **Real-Time Transport:** WebSockets (`github.com/gorilla/websocket`)
+* **Metrics:** Prometheus (`github.com/prometheus/client_golang`)
 
-## Prerequisites
-
-For the Docker Compose setup:
-
-- Docker Engine
-- Docker Compose plugin
-
-For running the Go service directly:
-
-- A Go version compatible with the version declared in `go.mod`
-- A reachable Redis server
-
-> The current `go.mod` declares `go 1.27.0`. Install a compatible Go toolchain before running the service locally or building the Docker image.
+---
 
 ## Getting Started
 
-### 1. Clone the repository
+### 1. Start the Distributed Cluster with Docker Compose
 
 ```bash
-git clone <repository-url>
-cd distributed-event-hub
+docker compose up -d
 ```
 
-Replace `<repository-url>` with the repository's actual Git URL.
+This starts:
+* `postgres`: PostgreSQL 16 ledger on host port `5432` with auto-initialized schemas in `db/migrations/`.
+* `redis`: Redis 7 alpine on host port `6379`.
+* `app_1`: Hub Node 1 on host port `8081` (internal `8080`).
+* `app_2`: Hub Node 2 on host port `8082` (internal `8080`).
+* `prometheus`: Prometheus server on host port `9090` scraping both app nodes every 5 seconds.
 
-### 2. Start the services
+### 2. Verify Container Health
 
 ```bash
-docker compose up --build
+docker compose ps
 ```
 
-This starts Redis and two hub instances:
-
-| Service | Host address | Container port |
-|---|---|---|
-| `app_1` | `http://localhost:8081` | `8080` |
-| `app_2` | `http://localhost:8082` | `8080` |
-| `redis` | `localhost:6379` | `6379` |
-
-The application containers wait for Redis's health check before starting.
-
-To stop the services:
-
-```bash
-docker compose down
-```
-
-To stop them and remove the Compose-managed volumes, if any have been added:
-
-```bash
-docker compose down --volumes
-```
-
-### 3. Run locally without Docker (optional)
-
-Start Redis separately, then run the application from the repository root:
-
-```bash
-export PORT=8080
-export REDIS_ADDR=localhost:6379
-go run ./cmd/hub
-```
-
-The service reads these environment variables:
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `PORT` | HTTP listening port | No default is assigned in the application |
-| `REDIS_ADDR` | Redis host and port | `redis:6379` |
-
-When running outside Docker, set `REDIS_ADDR` to the address of your local Redis server. Set `PORT` explicitly.
+---
 
 ## API Reference
 
-### `GET /ws`
+### 1. Financial Transfer (ACID Ledger & Outbox Staging)
+`POST /api/v1/transfers`
 
-Upgrades the HTTP connection to a WebSocket connection. Connected clients receive broadcast messages.
-
-Example using `websocat`:
+Executes an atomic transfer between two accounts with deterministic deadlock-free locking (`SELECT ... FOR NO KEY UPDATE` in sorted order), updates the ledger, and stages an outbox event.
 
 ```bash
+curl -i -X POST http://localhost:8081/api/v1/transfers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from_account_id": "0f4b58af-5cb7-431e-a055-be3f48e1ec37",
+    "to_account_id": "4383b7de-256a-4d22-996b-8c7cc67e77bf",
+    "amount": 250,
+    "currency": "USD"
+  }'
+```
+
+**Response (HTTP 201 Created):**
+```json
+{
+  "transfer": {
+    "id": "f7763cd4-31a7-43cf-b814-c8f89ae8ba1b",
+    "from_account_id": "0f4b58af-5cb7-431e-a055-be3f48e1ec37",
+    "to_account_id": "4383b7de-256a-4d22-996b-8c7cc67e77bf",
+    "amount": 250,
+    "created_at": "2026-10-19T07:36:59.227Z"
+  },
+  "from_account": { "id": "0f4b58af...", "balance": 4750 },
+  "to_account": { "id": "4383b7de...", "balance": 1250 },
+  "outbox_event": {
+    "sequence_id": 2001,
+    "status": "PENDING"
+  }
+}
+```
+
+### 2. Real-Time WebSocket Notifications
+`GET /ws`
+
+Upgrades connection to a WebSocket. Receives real-time JSON event notifications when transfers complete on any node in the cluster.
+
+```bash
+# Using websocat or wscat:
 websocat ws://localhost:8081/ws
 ```
 
-Connect a second terminal to `ws://localhost:8082/ws` to test delivery across instances.
+### 3. Prometheus Metrics Endpoint
+`GET /metrics`
 
-### `POST /api/v1/broadcast`
-
-Publishes the raw request body to the Redis channel `events:broadcast`. The service responds with HTTP `202 Accepted` when Redis accepts the publish operation.
-
-```bash
-curl -i \
-  -X POST http://localhost:8081/api/v1/broadcast \
-  -H 'Content-Type: text/plain' \
-  --data 'Hello from the distributed event hub'
-```
-
-Expected response body:
-
-```json
-{"status":"published"}
-```
-
-Keep a WebSocket client connected to each instance while sending the request. The connected clients should receive the event through Redis Pub/Sub.
-
-**Payload format:** the handler publishes the request body as-is; it does not validate that the body is JSON.
-
-### `GET /api/v1/metrics/{id}`
-
-Returns a metric payload for the supplied ID. Responses are cached in Redis under `metrics:{id}`. A cache hit sets `X-Cache: HIT`; a cache miss sets `X-Cache: MISS`. The cache TTL is 60 seconds plus a random jitter of up to 9 seconds.
-
-Example:
+Returns live Prometheus metrics including consumer lag, end-to-end dispatch latency histograms, and DLQ counter stats.
 
 ```bash
-curl -i http://localhost:8081/api/v1/metrics/demo
+curl -s http://localhost:8081/metrics
 ```
 
-The current `fetchFromDB` function is a **placeholder**, not a real database integration. It simulates a 50 ms delay and returns the requested ID and timestamp. The CPU and memory fields are currently left at their zero values.
+### 4. Cached Metrics Query
+`GET /api/v1/metrics/{id}`
 
-## Rate Limiting
+Returns cached metric responses with TTL + random jitter, tracking cache hits/misses via headers (`X-Cache: HIT` / `X-Cache: MISS`).
 
-The HTTP mux is wrapped in Redis-backed rate-limiting middleware configured for **10 requests per IP per one-second window**. Requests over the limit receive HTTP `429 Too Many Requests`, a `Retry-After: 1` header, and this response:
+---
 
-```json
-{"error":"Too Many Requests"}
+## Running the Automated Test Suite
+
+### Run Storage Tests (ACID Overdraft Rollback & Dual-Worker Race Verification)
+```bash
+go test -v ./internal/storage/...
 ```
 
-The limiter uses a Redis counter with an expiry, updated atomically using a Lua script.
+### Run Socket Tests (Slow-Consumer Eviction & Non-Blocking Guarantee)
+```bash
+go test -v ./internal/socket/...
+```
 
-> **Deployment note:** the middleware trusts `X-Forwarded-For` when present. Only trust this header when it is set or sanitized by a trusted reverse proxy; otherwise clients may be able to spoof their rate-limit identity.
+---
 
 ## Project Structure
 
@@ -173,56 +219,42 @@ The limiter uses a Redis counter with an expiry, updated atomically using a Lua 
 .
 ├── cmd/
 │   └── hub/
-│       └── main.go             # Application entry point and HTTP routes
+│       └── main.go                 # Application bootstrap, routing & graceful teardown
+├── db/
+│   └── migrations/                 # PostgreSQL schema migrations (accounts, transfers, outbox)
 ├── internal/
 │   ├── cache/
-│   │   └── metrics.go          # Redis-backed metric cache and HTTP handler
+│   │   └── metrics.go              # Cached metric endpoints with jitter
 │   ├── limiter/
-│   │   └── limiter.go          # Redis Lua-script rate limiter and middleware
-│   ├── pubsub/
-│   │   └── listener.go         # Redis Pub/Sub subscription and publishing
-│   └── socket/
-│       ├── client.go           # WebSocket connection read/write pumps
-│       └── hub.go              # Client registration and message fan-out
-├── Dockerfile
-├── docker-compose.yml
+│   │   └── limiter.go              # Redis Lua rate limiter middleware
+│   ├── relay/
+│   │   ├── poller.go               # Transactional outbox SKIP LOCKED leasing engine
+│   │   └── publisher.go            # Stream publisher abstraction
+│   ├── socket/
+│   │   ├── client.go               # WebSocket connection read/write pumps
+│   │   ├── hub.go                  # Non-blocking fan-out hub
+│   │   └── hub_test.go             # Slow-consumer isolation tests
+│   ├── storage/
+│   │   ├── db.go                   # PostgreSQL pgxpool initialization
+│   │   ├── outbox.go               # Outbox staging & state transitions
+│   │   ├── repository.go           # Repository interfaces
+│   │   ├── transfer.go             # Atomic double-entry financial ledger logic
+│   │   └── transfer_test.go        # ACID tests & multi-worker race verification
+│   ├── streaming/
+│   │   ├── consumer.go             # Dual-Loop Consumer Group (Loop A intake + Loop B recovery)
+│   │   ├── dlq.go                  # Dead-Letter Queue & poison-pill isolation pipeline
+│   │   └── producer.go             # Adaptive micro-batching producer with xxhash & pipeline flush
+│   └── telemetry/
+│       └── metrics.go              # Prometheus Gauge, Histogram, Counter definitions & LagExporter
+├── prometheus/
+│   └── prometheus.yml              # Prometheus 5s scrape configuration
+├── docker-compose.yml              # Multi-node local cluster specification
+├── Dockerfile                      # Production container image definition
 ├── go.mod
 └── go.sum
 ```
 
-## Development
-
-Format the Go code:
-
-```bash
-gofmt -w ./cmd ./internal
-```
-
-Run the test suite:
-
-```bash
-go test ./...
-```
-
-Build the service:
-
-```bash
-go build -o hub ./cmd/hub
-```
-
-No test files are currently included in the repository.
-
-## Current Limitations and Production Considerations
-
-- **Redis availability:** startup logs the result of `PING`, but the application does not currently fail fast or retry startup when Redis is unavailable.
-- **HTTP server lifecycle:** `http.ListenAndServe` errors are not handled, and there are no configured server timeouts or graceful-shutdown hooks.
-- **Rate-limit errors:** Redis errors from the limiter are treated like denied requests, so Redis failures can appear as HTTP 429 responses.
-- **WebSocket origin policy:** the upgrader allows requests with no `Origin` header and allows only the configured localhost origins otherwise. Configure this carefully for the intended deployment.
-- **Metrics implementation:** metric retrieval is simulated; no external database is queried yet.
-- **Cache error handling:** Redis cache write errors and JSON-marshalling errors are not surfaced by the current handler.
-- **Pub/Sub delivery:** Redis Pub/Sub is transient and does not persist events for disconnected consumers. This is broadcast messaging, not a durable queue.
-- **Container configuration:** the Dockerfile targets `linux/amd64`; adjust the build configuration if other architectures are required.
-- **Configuration and security:** Redis currently uses no password in the application configuration. Use appropriate network isolation and authentication for a production deployment.
+---
 
 ## License
 

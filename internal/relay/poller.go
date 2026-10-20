@@ -15,8 +15,12 @@ import (
 // StreamPublisher abstracts the destination message broker (e.g., Redis Streams / PubSub).
 // This interface decouples database polling from transport delivery, enabling seamless testing with mocks.
 type StreamPublisher interface {
-	PublishEvent(ctx context.Context, baseStream string, aggregateID string, eventID string, payload []byte) error
+	PublishEvent(ctx context.Context, baseStream string, aggregateID string, eventID string, payload []byte, createdAt time.Time) error
 }
+
+// We wrote two different implementations that fulfill this exact above contract:
+// internal/relay/publisher.go (RedisStreamPublisher)
+// internal/streaming/producer.go (AdaptiveBatchProducer)
 
 // OutboxPoller orchestrates the asynchronous extraction of staged outbox events
 // from PostgreSQL and relays them to the distributed streaming backplane.
@@ -196,12 +200,16 @@ func (p *OutboxPoller) pollAndDispatchBatch(ctx context.Context) error {
 
 	for _, event := range events {
 		// 1. Attempt to dispatch the event to the streaming publisher with partitioning by AggregateID
+		// Because p.publisher holds the AdaptiveBatchProducer we gave it in main.go,
+		// Go's runtime dynamic dispatch jumps straight to: Line 93 of
+		// internal/streaming/producer.go → func (p *AdaptiveBatchProducer) PublishEvent(...)
 		pubErr := p.publisher.PublishEvent(
 			ctx,
 			p.stream,
 			event.AggregateID, // <--- RETRIEVED FROM DB AND PASSED TO PUBLISHER!
 			event.ID.String(),
-			event.Payload)
+			event.Payload,
+			event.CreatedAt)
 
 		if pubErr == nil {
 			// 2. On Success: Transition status to PUBLISHED

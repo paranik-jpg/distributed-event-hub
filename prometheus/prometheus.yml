@@ -1,3 +1,7 @@
+# metrics.go computes the lag numbers and holds them in memory,
+# main.go serves those numbers over HTTP on /metrics,
+# and Prometheus visits /metrics to record them and plot graphs.
+
 global:
   scrape_interval: 5s  # How often Prometheus asks our apps: "Give me your current numbers"
 

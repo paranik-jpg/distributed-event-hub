@@ -1,5 +1,6 @@
 bin/
 dist/
+hub
 *.exe
 *.exe~
 *.dll
