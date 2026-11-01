@@ -181,6 +181,8 @@ Upgrades connection to a WebSocket. Receives real-time JSON event notifications 
 ```bash
 # Using websocat or wscat:
 websocat ws://localhost:8081/ws
+OR
+wscat -c ws://localhost:8081/ws
 ```
 
 ### 3. Prometheus Metrics Endpoint
