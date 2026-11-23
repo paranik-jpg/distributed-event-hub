@@ -23,7 +23,7 @@ var (
 type TransferParams struct {
 	FromAccountID uuid.UUID `json:"from_account_id"`
 	ToAccountID   uuid.UUID `json:"to_account_id"`
-	Amount        int64     `json:"amount"` // represented in the smallest currency unit (e.g. cents)
+	Amount        int64     `json:"amount"` 
 	Currency      string    `json:"currency"`
 }
 
@@ -84,16 +84,15 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 	defer tx.Rollback(ctx) // Will trigger if the code returns early via error, Safe no-op if committed
 
 	// 3. Deterministic Lock Ordering
-	// To prevent deadlocks between concurrent bidirectional transfers (e.g., A->B and B->A),
-	// we always acquire row locks in lexicographically sorted order of account IDs.
+	// To prevent deadlocks between concurrent bidirectional transfers (e.g., A->B and B->A), we always acquire row locks in lexicographically sorted order 
+	// of account IDs.
 	firstID, secondID := params.FromAccountID, params.ToAccountID
 	if firstID.String() > secondID.String() {
 		firstID, secondID = secondID, firstID
 	}
 
 	// 4. Acquire Row Locks using SELECT ... FOR NO KEY UPDATE
-	// FOR NO KEY UPDATE locks the row for balance modifications without blocking
-	// foreign key checks from other concurrent transactions.
+	// FOR NO KEY UPDATE locks the row for balance modifications without blocking foreign key checks from other concurrent transactions.
 	accountsMap := make(map[uuid.UUID]*Account, 2)
 	for _, id := range []uuid.UUID{firstID, secondID} {
 		var acc Account
@@ -123,7 +122,7 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 	fromAccount := accountsMap[params.FromAccountID]
 	toAccount := accountsMap[params.ToAccountID]
 
-	// 5. Invariant Validation: Currency Parity & Solvency
+	// 5. Invariant Validation: Currency Parity
 	if fromAccount.Currency != params.Currency || toAccount.Currency != params.Currency {
 		return nil, ErrCurrencyMismatch
 	}
