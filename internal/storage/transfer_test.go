@@ -52,8 +52,8 @@ func TestACID_OverdraftRollback(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create two test accounts: Alice ($50) and Bob ($10)
-	aliceID := createTestAccount(t, pool, "Alice", 5000) // $50.00
-	bobID := createTestAccount(t, pool, "Bob", 1000)     // $10.00
+	aliceID := createTestAccount(t, pool, "Alice", 5000) 
+	bobID := createTestAccount(t, pool, "Bob", 1000)     
 
 	// Get initial count of outbox events
 	var initialOutboxCount int
@@ -66,7 +66,7 @@ func TestACID_OverdraftRollback(t *testing.T) {
 	params := storage.TransferParams{
 		FromAccountID: aliceID,
 		ToAccountID:   bobID,
-		Amount:        10000, // $100.00
+		Amount:        10000, 
 		Currency:      "USD",
 	}
 
@@ -202,7 +202,8 @@ func TestDualWorker_RaceVerification(t *testing.T) {
 			mu.Unlock()
 
 			// Micro-sleep to allow interleaving between the two workers
-			time.Sleep(2 * time.Millisecond) // realistic processing delay
+			// realistic processing delay
+			time.Sleep(2 * time.Millisecond) 
 		}
 	}
 
