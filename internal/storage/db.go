@@ -18,7 +18,7 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 	// Configure pool parameters for production scalability.
 	config.MaxConns = 25                      // Maximum number of active connections in the pool.
-	config.MinConns = 5                       // Minimum warm (pre-authenticated, to handle sudden bursts of incoming requests) idle connections maintained at all times.
+	config.MinConns = 5                       // Minimum (pre-authenticated, to handle sudden bursts of incoming requests) idle connections maintained at all times.
 	config.MaxConnLifetime = 1 * time.Hour    // Maximum age of a connection before being closed and refreshed.
 	config.MaxConnIdleTime = 30 * time.Minute // Duration an idle connection can remain open before pruning down to MinConns.
 
