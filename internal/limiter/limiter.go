@@ -19,10 +19,9 @@ import (
 //    rdb.Expire(ctx, key, period) // ⚠️ DANGER ZONE
 // }
 
-// The Race Condition / Failure Problem: If our Go server crashes, reboots,
-// or suffers network interruption right after INCR but before EXPIRE, that key in Redis will never expire.
-// The counter stays at 1 permanently, and
-// subsequent requests will increment it forever, permanently blocking that IP.
+// The Race Condition / Failure Problem: If our Go server crashes, reboots, or suffers network interruption right after INCR but before EXPIRE, 
+// that key in Redis will never expire.
+// The counter stays at 1 permanently, and subsequent requests will increment it forever, permanently blocking that IP.
 
 // Why Lua Solves This:
 
@@ -92,7 +91,8 @@ func (l *Limiter) Middleware(next http.Handler) http.Handler {
 		allowed, _ := l.Allow(r.Context(), ip)
 		if !allowed {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "1") // Tell the client to back off for 1 second
+			// Tell the client to back off for 1 second
+			w.Header().Set("Retry-After", "1") 
 			w.WriteHeader(http.StatusTooManyRequests)
 			w.Write([]byte(`{"error":"Too Many Requests"}`))
 			return
