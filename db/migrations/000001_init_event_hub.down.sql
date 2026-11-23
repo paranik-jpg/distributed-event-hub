@@ -1,4 +1,3 @@
--- 000001_init_event_hub.down.sql
 -- Rollback migration for event hub initialization
 
 DROP INDEX IF EXISTS idx_outbox_unprocessed;
