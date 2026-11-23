@@ -16,7 +16,7 @@ const (
 	// Time allowed to read the next pong message from the peer.
 	pongWait = 60 * time.Second
 
-	// Send pings to peer with this period. Must be less than pongWait.
+	// Send pings to peer with this period. This must be less than pongWait.
 	pingPeriod = (pongWait * 9) / 10
 
 	// Maximum message size allowed from peer.
@@ -53,8 +53,7 @@ type Client struct {
 
 // readPump pumps messages from the websocket connection to the hub.
 //
-// The application runs readPump in a per-connection goroutine. The application
-// ensures that there is at most one reader on a connection by executing all
+// The application runs readPump in a per-connection goroutine. The application ensures that there is at most one reader on a connection by executing all
 // reads from this goroutine.
 func (c *Client) readPump() {
 	defer func() {
@@ -79,8 +78,7 @@ func (c *Client) readPump() {
 
 // writePump pumps messages from the hub to the websocket connection.
 //
-// A goroutine running writePump is started for each connection. The
-// application ensures that there is at most one writer to a connection by
+// A goroutine running writePump is started for each connection. The application ensures that there is at most one writer to a connection by
 // executing all writes from this goroutine.
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
@@ -99,8 +97,7 @@ func (c *Client) writePump() {
 			}
 
 			// w is an io.WriteCloser
-			// All data written to w prior to w.Close()
-			// is packaged into a single WebSocket message / frame.
+			// All data written to w prior to w.Close() is packaged into a single WebSocket message / frame.
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				return
@@ -114,8 +111,7 @@ func (c *Client) writePump() {
 				w.Write(<-c.send)
 			}
 
-			// Flushe the entire accumulated payload
-			// as one single WebSocket network frame.
+			// Flush the entire accumulated payload as one single WebSocket network frame.
 			if err := w.Close(); err != nil {
 				return
 			}
@@ -128,7 +124,7 @@ func (c *Client) writePump() {
 	}
 }
 
-// serveWs handles websocket requests from the peer.
+// ServeWs handles websocket requests from the peer.
 func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -138,8 +134,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
 	client.hub.register <- client
 
-	// Allow collection of memory referenced by the caller by doing all work in
-	// new goroutines.
+	// Allow collection of memory referenced by the caller by doing all work in new goroutines.
 	go client.writePump()
 	go client.readPump()
 }
