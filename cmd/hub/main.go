@@ -46,7 +46,7 @@ func main() {
 		instanceID = "hub-node-default"
 	}
 
-	// 1. Root Context with Signal Trap for Coordinated Graceful Teardown
+	// 1. Root Context and Signal-Based Graceful Shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -195,13 +195,13 @@ func main() {
 	// Prometheus Metrics Scrape Endpoint
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	// 11. Start HTTP Server in a separate goroutine so main can wait for OS signals
 	serverAddr := ":" + port
 	server := &http.Server{
 		Addr:    serverAddr,
 		Handler: ratelimiter.Middleware(mux),
 	}
 
+	// 11. Start HTTP Server in a separate goroutine so main can wait for OS signals
 	go func() {
 		slog.Info(fmt.Sprintf("HTTP Server listening on %s", serverAddr))
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -232,7 +232,8 @@ func main() {
 
 	// Step C: Allow background outbox poller and consumer groups to exit (triggered by ctx cancellation)
 	slog.Info("Teardown Step C: Draining consumer group worker pools and outbox poller...")
-	time.Sleep(500 * time.Millisecond) // Allow active in-flight worker tasks to drain and send XACK
+	// Allow active in-flight worker tasks to drain and send XACK
+	time.Sleep(500 * time.Millisecond) 
 
 	// Step D: Close Redis and PostgreSQL connection pools
 	slog.Info("Teardown Step D: Closing database and Redis connection pools...")
