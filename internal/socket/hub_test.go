@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// TestSlowConsumerIsolation verifies that when a client's outbound buffer (send channel)
-// fills to capacity (256 items), the hub's non-blocking broadcast immediately terminates
-// the slow client without blocking writes to healthy peers or inflating server memory.
+// TestSlowConsumerIsolation verifies that when a client's outbound buffer (send channel) fills to capacity (256 items), the hub's non-blocking broadcast 
+// immediately terminates the slow client without blocking writes to healthy peers or inflating server memory.
 func TestSlowConsumerIsolation(t *testing.T) {
 	hub := NewHub()
 	go hub.Run()
