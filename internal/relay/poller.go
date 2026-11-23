@@ -22,8 +22,7 @@ type StreamPublisher interface {
 // internal/relay/publisher.go (RedisStreamPublisher)
 // internal/streaming/producer.go (AdaptiveBatchProducer)
 
-// OutboxPoller orchestrates the asynchronous extraction of staged outbox events
-// from PostgreSQL and relays them to the distributed streaming backplane.
+// OutboxPoller orchestrates the asynchronous extraction of staged outbox events from PostgreSQL and relays them to the distributed streaming backplane.
 type OutboxPoller struct {
 	pool      *pgxpool.Pool
 	publisher StreamPublisher
@@ -87,14 +86,11 @@ func (p *OutboxPoller) Start(ctx context.Context) error {
 	}
 }
 
-// ClaimBatch acquires a batch of unprocessed or expired-lease outbox events
-// using non-blocking row-level locks (SELECT ... FOR UPDATE SKIP LOCKED).
+// ClaimBatch acquires a batch of unprocessed or expired-lease outbox events using non-blocking row-level locks (SELECT ... FOR UPDATE SKIP LOCKED).
 //
 // Crucial Architecture Decision:
-// This function commits its transaction IMMEDIATELY after marking the rows as PROCESSING
-// and setting locked_until = NOW() + 30s.
-// By committing immediately, database row locks and connections are NOT held
-// while communicating over the network to Redis.
+// This function commits its transaction IMMEDIATELY after marking the rows as PROCESSING and setting locked_until = NOW() + 30s.
+// By committing immediately, database row locks and connections are NOT held while communicating over the network to Redis.
 func (p *OutboxPoller) ClaimBatch(ctx context.Context) ([]storage.OutboxEvent, error) {
 	// 1. Open a short, dedicated transaction for claiming
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{
@@ -199,10 +195,9 @@ func (p *OutboxPoller) pollAndDispatchBatch(ctx context.Context) error {
 	slog.Debug("Claimed batch of outbox events", "count", len(events))
 
 	for _, event := range events {
-		// 1. Attempt to dispatch the event to the streaming publisher with partitioning by AggregateID
+		// 1. Attempt to dispatch the event to the streaming publisher with partitioning by AggregateID.
 		// Because p.publisher holds the AdaptiveBatchProducer we gave it in main.go,
-		// Go's runtime dynamic dispatch jumps straight to: Line 93 of
-		// internal/streaming/producer.go → func (p *AdaptiveBatchProducer) PublishEvent(...)
+		// Go's runtime dynamic dispatch jumps straight to internal/streaming/producer.go → func (p *AdaptiveBatchProducer) PublishEvent(...)
 		pubErr := p.publisher.PublishEvent(
 			ctx,
 			p.stream,
