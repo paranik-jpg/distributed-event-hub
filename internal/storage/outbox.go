@@ -37,11 +37,9 @@ type OutboxEvent struct {
 	UpdatedAt     time.Time    `json:"updated_at"`
 }
 
-// StageOutboxEvent serializes the event payload and inserts a record into outbox_events
-// within the caller's active database transaction (tx).
+// StageOutboxEvent serializes the event payload and inserts a record into outbox_events within the caller's active database transaction (tx).
 //
-// By inserting into outbox_events inside the SAME transaction as the balance updates,
-// we eliminate the Dual-Write Problem with zero window for data drift.
+// By inserting into outbox_events inside the SAME transaction as the balance updates, we eliminate the Dual-Write Problem with zero window for data drift.
 func StageOutboxEvent(
 	ctx context.Context,
 	tx pgx.Tx,
