@@ -1,4 +1,3 @@
--- 000001_init_event_hub.up.sql
 -- Enterprise Database Schema: Double-Entry Financial Ledger & Transactional Outbox Engine
 
 -- 1. Enable UUID Extension (pgcrypto / uuid-ossp for random UUID generation)
@@ -7,13 +6,14 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
 -- TABLE 1: ACCOUNTS
--- Represents client balances. Enforces strict non-negative balance constraint.
+-- Represents client balances. 
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner VARCHAR(255) NOT NULL,
     -- A 3-letter currency code
     currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+    -- Enforces strict non-negative balance constraint.
     balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
     -- DEFAULT NOW() => Record the exact time the row was created.
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS entries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
     transfer_id UUID REFERENCES transfers(id) ON DELETE RESTRICT,
-    amount BIGINT NOT NULL, -- negative for debit, positive for credit
+    -- amount => negative for debit, positive for credit
+    amount BIGINT NOT NULL, 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -72,7 +73,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     -- PENDING: Saved in Postgres, waiting to be sent to Redis.
     -- PROCESSING: A background worker picked it up.
     -- PUBLISHED: Successfully sent to Redis Pub/Sub!
-    -- DEAD: Failed after 5 retries (Dead Letter Queue) so engineers can investigate without breaking the queue.
+    -- DEAD: Failed after 5 retries (Dead Letter Queue) so can be investigated without breaking the queue.
         CHECK (status IN ('PENDING', 'PROCESSING', 'PUBLISHED', 'DEAD')),
     retry_count INT NOT NULL DEFAULT 0,
     max_retries INT NOT NULL DEFAULT 5,
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 
 -- ============================================================================
 -- PARTIAL INDEX: HIGH-PERFORMANCE WORKER QUEUE SCANNING
--- Keeps index footprint microscopic by only indexing unhandled events.
+-- Minimizes index size by indexing only unhandled events.
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_outbox_unprocessed
 ON outbox_events (sequence_id ASC)
