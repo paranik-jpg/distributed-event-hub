@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// StreamPublisher abstracts the destination message broker (e.g., Redis Streams / PubSub).
-// This interface decouples database polling from transport delivery, enabling seamless testing with mocks.
+// StreamPublisher abstracts/hides the destination message broker (e.g., Redis Streams / PubSub).
+// This interface separates database polling from message delivery, making testing with mocks easier.
 type StreamPublisher interface {
 	PublishEvent(ctx context.Context, baseStream string, aggregateID string, eventID string, payload []byte, createdAt time.Time) error
 }
@@ -22,7 +22,7 @@ type StreamPublisher interface {
 // internal/relay/publisher.go (RedisStreamPublisher)
 // internal/streaming/producer.go (AdaptiveBatchProducer)
 
-// OutboxPoller orchestrates the asynchronous extraction of staged outbox events from PostgreSQL and relays them to the distributed streaming backplane.
+// OutboxPoller asynchronously fetches pending events from PostgreSQL and sends them to the streaming system.
 type OutboxPoller struct {
 	pool      *pgxpool.Pool
 	publisher StreamPublisher
@@ -58,8 +58,7 @@ func NewOutboxPoller(
 	}
 }
 
-// Start launches the poller's background run loop.
-// It continuously polls for unhandled outbox events on each tick until the provided context is canceled.
+// Start launches the poller's background run loop which continuously polls for unhandled outbox events on each tick until the provided context is canceled.
 func (p *OutboxPoller) Start(ctx context.Context) error {
 	slog.Info("Starting transactional outbox relay poller",
 		"batch_size", p.batchSize,
@@ -86,7 +85,7 @@ func (p *OutboxPoller) Start(ctx context.Context) error {
 	}
 }
 
-// ClaimBatch acquires a batch of unprocessed or expired-lease outbox events using non-blocking row-level locks (SELECT ... FOR UPDATE SKIP LOCKED).
+// ClaimBatch locks a batch of pending or expired-lease events without blocking other workers (SELECT ... FOR UPDATE SKIP LOCKED).
 //
 // Crucial Architecture Decision:
 // This function commits its transaction IMMEDIATELY after marking the rows as PROCESSING and setting locked_until = NOW() + 30s.
@@ -196,8 +195,7 @@ func (p *OutboxPoller) pollAndDispatchBatch(ctx context.Context) error {
 
 	for _, event := range events {
 		// 1. Attempt to dispatch the event to the streaming publisher with partitioning by AggregateID.
-		// Because p.publisher holds the AdaptiveBatchProducer we gave it in main.go,
-		// Go's runtime dynamic dispatch jumps straight to internal/streaming/producer.go → func (p *AdaptiveBatchProducer) PublishEvent(...)
+		// p.publisher holds an AdaptiveBatchProducer we gave in main.go, so PublishEvent() calls its implementation in producer.go.
 		pubErr := p.publisher.PublishEvent(
 			ctx,
 			p.stream,
@@ -255,7 +253,7 @@ func (p *OutboxPoller) markPublished(ctx context.Context, sequenceID int64) erro
 }
 
 // handlePublishFailure increments retry_count and logs last_error.
-// If retry_count + 1 >= max_retries, it isolates the event as DEAD (Dead-Letter Queue).
+// If retry_count + 1 >= max_retries, it isolates the event as DEAD (Pushed to Dead-Letter Queue).
 // Otherwise, it resets the status back to PENDING and clears locked_until for an immediate or subsequent retry.
 func (p *OutboxPoller) handlePublishFailure(ctx context.Context, event storage.OutboxEvent, pubErr error) error {
 	newRetryCount := event.RetryCount + 1
