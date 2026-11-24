@@ -21,8 +21,7 @@ type StreamMessageTask struct {
 	Message   redis.XMessage // The actual Redis message (holds the message ID and the payload data).
 }
 
-// StreamConsumerGroup orchestrates the consumption of partitioned Redis Streams
-// across multiple instances using Redis Consumer Groups.
+// StreamConsumerGroup orchestrates the consumption of partitioned Redis Streams across multiple instances using Redis Consumer Groups.
 type StreamConsumerGroup struct {
 	rdb            *redis.Client
 	hub            *socket.Hub
@@ -70,8 +69,7 @@ func NewStreamConsumerGroup(
 }
 
 // BootstrapConsumerGroups ensures consumer groups exist on all partition streams.
-// It executes: XGROUP CREATE stream_key group_name $ MKSTREAM
-// and traps/ignores BUSYGROUP errors so concurrent multi-instance launches do not crash.
+// It executes: XGROUP CREATE stream_key group_name $ MKSTREAM and traps/ignores BUSYGROUP errors so concurrent multi-instance launches do not crash.
 func (c *StreamConsumerGroup) BootstrapConsumerGroups(ctx context.Context) error {
 	for i := 0; i < c.partitionCount; i++ {
 		streamKey := fmt.Sprintf("%s:%d", c.baseStream, i)
@@ -119,9 +117,7 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 	go c.janitorLoop(ctx)
 
 	// 2. Build the list of all partitioned stream keys and their offset arguments
-	// Redis's XREADGROUP command expects an array
-	// where the first half is the stream names,
-	// and the second half is the IDs.
+	// Redis's XREADGROUP command expects an array where the first half is the stream names, and the second half is the IDs.
 	// In XREADGROUP, streams is passed as: [streamKey0, streamKey1, ..., ">", ">", ...]
 	streams := make([]string, c.partitionCount*2)
 	for i := 0; i < c.partitionCount; i++ {
@@ -142,12 +138,12 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			slog.Info("Context canceled: shutting down Active Intake consumer loop", "reason", ctx.Err())
 			close(c.taskQueue)
-			c.wg.Wait() // Wait for the 10 workers to finish their current tasks.
+			c.wg.Wait() // Wait for the workers to finish their current tasks.
 			return ctx.Err()
 		default:
 		}
 
-		// Read new messages with bounded blocking (BLOCK 2s) to observe context cancellations cleanly
+		// Read new messages with bounded blocking to observe context cancellations cleanly
 		entries, err := c.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    c.groupName,
 			Consumer: c.consumerName,
@@ -166,8 +162,9 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 				continue
 			}
 			slog.Error("Error reading from stream consumer group", "error", err)
+			// Back off slightly on network error
 			// Let Redis stabilize, don't spin for loop for a bit.
-			time.Sleep(100 * time.Millisecond) // Back off slightly on network error
+			time.Sleep(100 * time.Millisecond) 
 			continue
 		}
 
@@ -190,8 +187,7 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 	}
 }
 
-// workerLoop is a dedicated worker goroutine that processes tasks from taskQueue
-// and acknowledges them to Redis via XACK upon successful completion.
+// workerLoop is a dedicated worker goroutine that processes tasks from taskQueue and acknowledges them to Redis via XACK upon successful completion.
 func (c *StreamConsumerGroup) workerLoop(ctx context.Context, workerID int) {
 	defer c.wg.Done()
 
@@ -240,11 +236,8 @@ func (c *StreamConsumerGroup) workerLoop(ctx context.Context, workerID int) {
 						parts := strings.Split(task.StreamKey, ":")
 						partitionLabel := parts[len(parts)-1]
 
-						telemetry.DispatchLatencyHistogram.WithLabelValues(
-							task.StreamKey,
-							partitionLabel,
-							c.groupName,
-						).Observe(latencySeconds) // Increments the appropriate histogram bucket and updates the cumulative _sum and _count metrics.
+						// Increments the appropriate histogram bucket and updates the cumulative _sum and _count metrics.
+						telemetry.DispatchLatencyHistogram.WithLabelValues(task.StreamKey, partitionLabel, c.groupName).Observe(latencySeconds) 
 					}
 				}
 			}
@@ -254,8 +247,8 @@ func (c *StreamConsumerGroup) workerLoop(ctx context.Context, workerID int) {
 
 // janitorLoop implements Loop B: Orphan Adoption & Crash Recovery Janitor.
 // It wakes up periodically (every 5 seconds) and scans each partition stream using XAUTOCLAIM.
-// Any message that has been pending for longer than minIdle (30s) due to a dead, crashed,
-// or partitioned worker is automatically claimed, reassigned to this consumer, and pushed into the worker pool.
+// Any message that has been pending for longer than minIdle (30s) due to a dead, crashed, or partitioned worker is 
+// automatically claimed, reassigned to this consumer, and pushed into the worker pool.
 func (c *StreamConsumerGroup) janitorLoop(ctx context.Context) {
 	defer c.wg.Done()
 
@@ -265,7 +258,8 @@ func (c *StreamConsumerGroup) janitorLoop(ctx context.Context) {
 
 	// The threshold. If a message was claimed less than 30 seconds ago, we leave it alone.
 	minIdle := 30 * time.Second
-	dlqManager := NewDLQManager(c.rdb, c.groupName, 3) // Isolate poison pills after 3 failed deliveries (delivery_count > 3)
+	// Isolate poison pills after 3 failed deliveries (delivery_count > 3)
+	dlqManager := NewDLQManager(c.rdb, c.groupName, 3) 
 
 	slog.Info("Starting Loop B: Orphan Adoption & Crash Recovery Janitor",
 		"group", c.groupName,
