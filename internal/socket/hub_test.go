@@ -59,7 +59,7 @@ func TestSlowConsumerIsolation(t *testing.T) {
 		t.Fatalf("Broadcast blocked for %v! Non-blocking guarantee violated.", broadcastDuration)
 	}
 
-	// 4. Verify Slow Client was evicted and its send channel closed
+	// 4. Verify Slow Client was evicted and its send channel was closed
 	// Reading from a closed channel immediately yields ok == false
 	select {
 	case _, ok := <-slowClient.send:
