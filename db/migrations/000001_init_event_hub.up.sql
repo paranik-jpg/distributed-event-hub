@@ -1,12 +1,11 @@
 -- Enterprise Database Schema: Double-Entry Financial Ledger & Transactional Outbox Engine
 
+-- In PostgreSQL, extensions are like libraries.
 -- 1. Enable UUID Extension (pgcrypto / uuid-ossp for random UUID generation)
--- In PostgreSQL, extensions are like plugins or libraries.
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================================
--- TABLE 1: ACCOUNTS
--- Represents client balances. 
+-- TABLE 1: ACCOUNTS (Represents client balances). 
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS accounts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -21,12 +20,11 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 -- ============================================================================
--- TABLE 2: TRANSFERS
--- Tracks intent of money moving between two distinct accounts.
+-- TABLE 2: TRANSFERS (Tracks intent of money moving between two distinct accounts).
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS transfers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    -- REFERENCES accounts(id) => This is a Foreign Key
+    -- REFERENCES accounts(id) => Foreign Key
     -- ON DELETE RESTRICT => If someone tries to delete an account from the accounts table that has transfers attached to it, Postgres blocks the deletion.
     from_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
     to_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
@@ -59,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_transfer_id ON entries(transfer_id);
 
 -- ============================================================================
 -- TABLE 4: OUTBOX_EVENTS (Transactional Outbox Pattern)
--- Solves the Dual-Write Problem. Enables at-least-once message delivery to Redis.
+-- Solves the Dual-Write Problem. Ensures every message is delivered to Redis at least once.
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS outbox_events (
     -- BIGSERIAL => An auto-incrementing integer
@@ -73,7 +71,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     -- PENDING: Saved in Postgres, waiting to be sent to Redis.
     -- PROCESSING: A background worker picked it up.
     -- PUBLISHED: Successfully sent to Redis Pub/Sub!
-    -- DEAD: Failed after 5 retries (Dead Letter Queue) so can be investigated without breaking the queue.
+    -- DEAD: Failed after 5 retries (Pushed to Dead Letter Queue) so can be investigated later/separately without breaking the queue.
         CHECK (status IN ('PENDING', 'PROCESSING', 'PUBLISHED', 'DEAD')),
     retry_count INT NOT NULL DEFAULT 0,
     max_retries INT NOT NULL DEFAULT 5,
