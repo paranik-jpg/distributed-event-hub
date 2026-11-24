@@ -65,7 +65,7 @@ type Entry struct {
 // TransferTx executes an atomic double-entry balance transfer between two accounts.
 // It enforces deterministic lock ordering to guarantee immunity from database deadlocks.
 func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) (*TransferResult, error) {
-	// 1. Invariant Validation: Basic Sanity Checks
+	// 1. Basic Checks
 	if params.FromAccountID == params.ToAccountID {
 		return nil, ErrSelfTransfer
 	}
@@ -75,7 +75,7 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 
 	// 2. Begin ACID Transaction with ReadCommitted Isolation
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
-		// Ensure transactions only see real, committed data.
+		// ReadCommitted ensures transactions only see real, committed data.
 		IsoLevel: pgx.ReadCommitted,
 	})
 	if err != nil {
@@ -122,7 +122,7 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 	fromAccount := accountsMap[params.FromAccountID]
 	toAccount := accountsMap[params.ToAccountID]
 
-	// 5. Invariant Validation: Currency Parity
+	// 5. Validation: Currency Parity
 	if fromAccount.Currency != params.Currency || toAccount.Currency != params.Currency {
 		return nil, ErrCurrencyMismatch
 	}
