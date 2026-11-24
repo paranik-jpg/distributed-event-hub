@@ -20,8 +20,8 @@ import (
 	"distributed-event-hub/internal/streaming"
 	"distributed-event-hub/internal/telemetry"
 
+	// promhttp is the HTTP handler that translates Prometheus metrics into HTTP-readable scrape text.
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	// promhttp => The HTTP handler that translates Prometheus metrics into the scrape text format.
 	"github.com/redis/go-redis/v9"
 )
 
@@ -79,8 +79,8 @@ func main() {
 	hub := socket.NewHub()
 	go hub.Run()
 
-	// 6. Initialize Adaptive Micro-Batching Stream Producer
-	// Connects the outbox relay directly to the partitioned stream producer
+	// 6. Initializes the producer that batches streaming events dynamically based on load.
+	// Connects the outbox relay directly to the partitioned stream producer.
 	streamPublisher := streaming.NewAdaptiveBatchProducer(
 		rdb,
 		4,                  // 4 parallel partition streams
@@ -103,7 +103,7 @@ func main() {
 		}
 	}()
 
-	// 8. Initialize Dual-Loop Consumer Group Engine (replaces legacy listener.go)
+	// 8. Initialize Dual-Loop Consumer Group Engine
 	// Consumes events from Redis Streams and forwards them to hub.Broadcast for live WebSocket emission
 	consumerGroup := streaming.NewStreamConsumerGroup(
 		rdb,
@@ -141,7 +141,7 @@ func main() {
 		socket.ServeWs(hub, w, r)
 	})
 
-	// POST /api/v1/transfers: Atomic financial transfer with deterministic locking & outbox staging
+	// POST /api/v1/transfers:
 	mux.HandleFunc("POST /api/v1/transfers", func(w http.ResponseWriter, r *http.Request) {
 		var params storage.TransferParams
 		if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
@@ -182,13 +182,6 @@ func main() {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// Deprecated route guidance
-	mux.HandleFunc("POST /api/v1/broadcast", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGone) // HTTP 410 Gone
-		w.Write([]byte(`{"error":"The /api/v1/broadcast endpoint has been deprecated. Use POST /api/v1/transfers to stage transactional events."}`))
-	})
-
 	// Cached Metrics endpoint
 	mux.Handle("GET /api/v1/metrics/{id}", metricsHandler)
 
@@ -225,7 +218,7 @@ func main() {
 		slog.Error("Error during HTTP server shutdown", "error", err)
 	}
 
-	// Step B: Flush all active producer micro-batch pipelines to Redis
+	// Step B: Send all pending micro-batches from active producers to Redis.
 	slog.Info("Teardown Step B: Flushing active stream producer pipelines...")
 	streamPublisher.Close()
 	lagExporter.Stop()
