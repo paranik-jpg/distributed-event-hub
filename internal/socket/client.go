@@ -53,8 +53,7 @@ type Client struct {
 
 // readPump pumps messages from the websocket connection to the hub.
 //
-// The application runs readPump in a per-connection goroutine. The application ensures that there is at most one reader on a connection by executing all
-// reads from this goroutine.
+// Each connection has one readPump goroutine that handles all reads, ensuring only one reader per connection.
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
@@ -78,8 +77,7 @@ func (c *Client) readPump() {
 
 // writePump pumps messages from the hub to the websocket connection.
 //
-// A goroutine running writePump is started for each connection. The application ensures that there is at most one writer to a connection by
-// executing all writes from this goroutine.
+// Each connection has one writePump goroutine that handles all writes, ensuring only one writer per connection.
 func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -134,7 +132,7 @@ func ServeWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)}
 	client.hub.register <- client
 
-	// Allow collection of memory referenced by the caller by doing all work in new goroutines.
+	// Move all work to new goroutines so the caller's memory can be garbage-collected.
 	go client.writePump()
 	go client.readPump()
 }
