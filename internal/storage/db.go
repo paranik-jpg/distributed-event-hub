@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NewPool initializes and configures a high-performance PostgreSQL connection pool.
+// NewPool initializes and configures a PostgreSQL connection pool.
 func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	// Parse the raw connection string into a pgxpool configuration object.
 	config, err := pgxpool.ParseConfig(databaseURL)
