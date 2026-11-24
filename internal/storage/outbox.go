@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// OutboxStatus defines the lifecycle state machine of a transactional outbox event.
+// OutboxStatus defines the possible states of an outbox event throughout its lifecycle.
 type OutboxStatus string
 
 const (
@@ -20,7 +20,7 @@ const (
 	OutboxStatusDead       OutboxStatus = "DEAD"
 )
 
-// OutboxEvent represents a persisted domain event waiting to be relayed to Redis Pub/Sub.
+// OutboxEvent represents a saved event waiting to be published to Redis Pub/Sub.
 type OutboxEvent struct {
 	SequenceID    int64        `json:"sequence_id"`
 	ID            uuid.UUID    `json:"id"`
