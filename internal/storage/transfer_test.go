@@ -43,7 +43,7 @@ func createTestAccount(t *testing.T, pool *pgxpool.Pool, owner string, balance i
 }
 
 // ============================================================================
-// VERIFICATION 2: ACID Invariant & Rollback on Overdraft
+// VERIFICATION: ACID & Rollback on Overdraft
 // ============================================================================
 func TestACID_OverdraftRollback(t *testing.T) {
 	pool := getTestPool(t)
@@ -104,7 +104,7 @@ func TestACID_OverdraftRollback(t *testing.T) {
 }
 
 // ============================================================================
-// VERIFICATION 3: Dual-Worker Race Verification (1,000 Seeded Events)
+// VERIFICATION: Dual-Worker Race Verification (1,000 Seeded Events)
 // ============================================================================
 func TestDualWorker_RaceVerification(t *testing.T) {
 	pool := getTestPool(t)
@@ -202,7 +202,7 @@ func TestDualWorker_RaceVerification(t *testing.T) {
 			mu.Unlock()
 
 			// Micro-sleep to allow interleaving between the two workers
-			// realistic processing delay
+			// Mimicking realistic processing delay
 			time.Sleep(2 * time.Millisecond) 
 		}
 	}
