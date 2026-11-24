@@ -81,7 +81,7 @@ func TransferTx(ctx context.Context, pool *pgxpool.Pool, params TransferParams) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback(ctx) // Will trigger if the code returns early via error, Safe no-op if committed
+	defer tx.Rollback(ctx) // Runs on early error returns; does nothing if already committed.
 
 	// 3. Deterministic Lock Ordering
 	// To prevent deadlocks between concurrent bidirectional transfers (e.g., A->B and B->A), we always acquire row locks in lexicographically sorted order 
