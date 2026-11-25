@@ -21,7 +21,7 @@ type StreamMessageTask struct {
 	Message   redis.XMessage // The actual Redis message (holds the message ID and the payload data).
 }
 
-// StreamConsumerGroup orchestrates the consumption of partitioned Redis Streams across multiple instances using Redis Consumer Groups.
+// StreamConsumerGroup manages how multiple instances consume partitioned Redis Streams using Redis Consumer Groups.
 type StreamConsumerGroup struct {
 	rdb            *redis.Client
 	hub            *socket.Hub
@@ -29,7 +29,7 @@ type StreamConsumerGroup struct {
 	groupName      string
 	consumerName   string
 	partitionCount int
-	workerCount    int // Background workers we run concurrently.
+	workerCount    int // Count of background workers we run concurrently.
 
 	taskQueue chan StreamMessageTask // Our conveyor belt, reader puts on it, workers take them off
 	wg        sync.WaitGroup
@@ -69,12 +69,13 @@ func NewStreamConsumerGroup(
 }
 
 // BootstrapConsumerGroups ensures consumer groups exist on all partition streams.
-// It executes: XGROUP CREATE stream_key group_name $ MKSTREAM and traps/ignores BUSYGROUP errors so concurrent multi-instance launches do not crash.
+// It creates a Redis Consumer Group using XGROUP CREATE and ignores BUSYGROUP errors when the group already exists, 
+// preventing crashes during simultaneous instance startup.
 func (c *StreamConsumerGroup) BootstrapConsumerGroups(ctx context.Context) error {
 	for i := 0; i < c.partitionCount; i++ {
 		streamKey := fmt.Sprintf("%s:%d", c.baseStream, i)
 
-		// Execute XGROUP CREATE stream_key group_name $ MKSTREAM
+		// Execute XGROUP CREATE stream_key group_name $ MKSTREAM !!!
 		// "$" means only read brand-new messages arriving after group creation.
 		// MKSTREAM automatically creates the stream key in Redis if it does not exist yet.
 		err := c.rdb.XGroupCreateMkStream(ctx, streamKey, c.groupName, "$").Err()
@@ -98,7 +99,7 @@ func (c *StreamConsumerGroup) BootstrapConsumerGroups(ctx context.Context) error
 	return nil
 }
 
-// Start launches the worker pool and begins Loop A (Active Intake).
+// Start launches the worker pool and begins Loop A (Active Intake). 
 // It blocks until ctx is canceled, then cleanly shuts down workers.
 func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 	// This is the initial setup step
@@ -138,7 +139,8 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			slog.Info("Context canceled: shutting down Active Intake consumer loop", "reason", ctx.Err())
 			close(c.taskQueue)
-			c.wg.Wait() // Wait for the workers to finish their current tasks.
+			// Wait for the workers to finish their current tasks.
+			c.wg.Wait() 
 			return ctx.Err()
 		default:
 		}
@@ -149,26 +151,24 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 			Consumer: c.consumerName,
 			Streams:  streams,
 			Count:    50,              // Fetch up to 50 messages per read across partitions
-			Block:    2 * time.Second, // Bounded blocking: Wait upto 2s for a message to arrive, (if there are no new messages in the stream right now).
+			Block:    2 * time.Second, // Wait upto 2s for a message to arrive, (if there are no new messages in the stream right now).
 		}).Result()
 
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				// redis.Nil indicates the 2-second block duration timed out with no new messages.
-				// This is expected normal behavior; continue to next iteration.
+				// redis.Nil indicates the 2-second block duration timed out with no new messages. This is expected normal behavior; continue to next iteration.
 				continue
 			}
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				continue
 			}
 			slog.Error("Error reading from stream consumer group", "error", err)
-			// Back off slightly on network error
-			// Let Redis stabilize, don't spin for loop for a bit.
+			// Back off slightly on network error. Let Redis stabilize, don't spin for loop for a bit.
 			time.Sleep(100 * time.Millisecond) 
 			continue
 		}
 
-		// Dispatch received messages into the bounded worker pool channel
+		// Dispatch received messages into the bounded worker pool channel!
 		// streamEntry represents one specific stream partition.
 		for _, streamEntry := range entries {
 			for _, msg := range streamEntry.Messages {
@@ -180,7 +180,7 @@ func (c *StreamConsumerGroup) Start(ctx context.Context) error {
 				select {
 				case <-ctx.Done():
 					continue
-				case c.taskQueue <- task: // Blocks if worker pool is saturated (Backpressure)
+				case c.taskQueue <- task: // Blocks if worker pool is saturated
 				}
 			}
 		}
@@ -285,11 +285,11 @@ func (c *StreamConsumerGroup) janitorLoop(ctx context.Context) {
 				}
 
 				// Step 2: Auto-claim healthy abandoned messages whose idle time >= 30s
+				// This is our bookmark!
 				startID := "0-0"
 				for {
-					// XAUTOCLAIM stream group consumer min-idle-time start [COUNT count]
-					// Reassigns ownership of idle unacknowledged messages to this consumer!
-					// nextStartID => Like a bookmark telling from where to continue in next batch.
+					// Reclaims idle, unacknowledged messages from another consumer using XAUTOCLAIM.
+					// nextStartID => A bookmark indicating where to resume scanning in the next batch.
 					claimResult, nextStartID, err := c.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 						Stream:   streamKey,
 						Group:    c.groupName,
@@ -326,7 +326,8 @@ func (c *StreamConsumerGroup) janitorLoop(ctx context.Context) {
 							select {
 							case <-ctx.Done():
 								return
-							case c.taskQueue <- task: // Feed the worker pool!
+							// Feed the worker pool!
+							case c.taskQueue <- task: 
 							}
 						}
 					}
@@ -335,7 +336,8 @@ func (c *StreamConsumerGroup) janitorLoop(ctx context.Context) {
 					if nextStartID == "0-0" || nextStartID == "" {
 						break
 					}
-					startID = nextStartID // Move bookmark forward for the next batch
+					// Move bookmark forward for the next batch
+					startID = nextStartID 
 				}
 			}
 		}
