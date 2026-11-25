@@ -103,7 +103,7 @@ Binds OS interrupt signals (`SIGINT`, `SIGTERM`) to trigger an ordered 4-step sh
 ## Tech Stack
 
 * **Language:** Go
-* **Database:** PostgreSQL 16 (ACID Double-Entry Ledger & Transactional Outbox)
+* **Database:** PostgreSQL 16 
 * **Driver / Connection Pool:** `github.com/jackc/pgx/v5` (`pgxpool`)
 * **Streaming & Cache:** Redis 7 (Partitioned Streams, Consumer Groups, PEL, Lua Rate Limiter)
 * **Redis Client:** `github.com/redis/go-redis/v9`
