@@ -29,8 +29,8 @@ type publishRequest struct {
 }
 
 // AdaptiveBatchProducer implements an adaptive micro-batching Redis Streams producer.
-// It aggregates incoming publish requests in memory and flushes them in bulk using Redis Pipelines (XADD)
-// with approximate stream capping (MAXLEN ~ 100000) for O(1) memory bound eviction.
+// It aggregates incoming publish requests in memory and flushes them in bulk using Redis Pipelines (XADD) with approximate stream capping (MAXLEN ~ 100000) 
+// for O(1) memory bound eviction.
 type AdaptiveBatchProducer struct {
 	rdb            *redis.Client
 	partitionCount int
@@ -41,6 +41,7 @@ type AdaptiveBatchProducer struct {
 
 	// Channel where incoming requests wait.
 	queue chan publishRequest
+	
 	// A signal channel used to tell the background worker to shut down cleanly.
 	stop chan struct{}
 	wg   sync.WaitGroup
@@ -58,13 +59,13 @@ func NewAdaptiveBatchProducer(
 		partitionCount = 4
 	}
 	if batchThreshold <= 0 {
-		batchThreshold = 500 // Micro-batch item threshold
+		batchThreshold = 500 				  // Micro-batch item threshold
 	}
 	if flushInterval <= 0 {
-		flushInterval = 5 * time.Millisecond // 5ms elapsed flush window
+		flushInterval = 5 * time.Millisecond  // 5ms elapsed flush window
 	}
 	if maxLenApprox <= 0 {
-		maxLenApprox = 100000 // Keep up to ~100k events per stream partition
+		maxLenApprox = 100000 				  // Keep up to ~100k events per stream partition
 	}
 
 	p := &AdaptiveBatchProducer{
@@ -88,11 +89,10 @@ func NewAdaptiveBatchProducer(
 func (p *AdaptiveBatchProducer) GetPartitionKey(baseStream string, aggregateID string) string {
 	hash := xxhash.Sum64String(aggregateID)
 	partitionID := hash % uint64(p.partitionCount)
-	return fmt.Sprintf("%s:%d", baseStream, partitionID) // Returns "events:transfers:1"
+	return fmt.Sprintf("%s:%d", baseStream, partitionID) // Return "events:transfers:1"
 }
 
-// PublishEvent submits a publish request to the batching queue and blocks waiting
-// for the pipeline flusher to execute and acknowledge the result.
+// PublishEvent adds an event to the batching queue and waits for the flusher to publish it and return the result.
 func (p *AdaptiveBatchProducer) PublishEvent(
 	ctx context.Context,
 	baseStream string,
@@ -123,7 +123,7 @@ func (p *AdaptiveBatchProducer) PublishEvent(
 	}
 
 	// Wait for pipeline execution acknowledgment
-	// Blocks and waits on <-errChan.
+	// Block and wait on <-errChan.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -132,8 +132,8 @@ func (p *AdaptiveBatchProducer) PublishEvent(
 	}
 }
 
-// runFlusher is the dedicated background goroutine that accumulates publish requests
-// until reaching either batchThreshold items or flushInterval time, then flushes them via pipeline.
+// runFlusher is the dedicated background goroutine that accumulates publish requests until reaching either batchThreshold items or flushInterval time, 
+// then flushes them via pipeline.
 func (p *AdaptiveBatchProducer) runFlusher() {
 	defer p.wg.Done()
 
@@ -182,8 +182,8 @@ func (p *AdaptiveBatchProducer) runFlusher() {
 	}
 }
 
-// executePipeline buffers all accumulated XADD commands into a single Redis Pipeline,
-// flushes them over the network in one round trip, and notifies each caller's errChan.
+// executePipeline buffers all accumulated XADD commands into a single Redis Pipeline, flushes them over the network in one round trip, 
+// and notifies each caller's errChan.
 func (p *AdaptiveBatchProducer) executePipeline(batch []publishRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -192,7 +192,7 @@ func (p *AdaptiveBatchProducer) executePipeline(batch []publishRequest) {
 	// A pipeline queues commands in Go memory instead of sending them immediately.
 	pipe := p.rdb.Pipeline()
 
-	// 1. Buffer all XADD commands into the pipeline (Go's memory buffer).
+	// 1. Buffer all XADD commands into the pipeline.
 	cmds := make([]*redis.StringCmd, len(batch))
 	for i, req := range batch {
 		streamKey := p.GetPartitionKey(req.baseStream, req.aggregateID)
@@ -200,12 +200,13 @@ func (p *AdaptiveBatchProducer) executePipeline(batch []publishRequest) {
 		cmds[i] = pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: streamKey,
 			MaxLen: p.maxLenApprox, // Approximate capping (MAXLEN ~ 100000)
-			Approx: true,           // Enables Redis ~ flag for O(1) macro-node trimming
+			Approx: true,           // Enable Redis ~ flag for O(1) macro-node trimming
 			Values: map[string]interface{}{
 				"event_id":     req.eventID,
 				"aggregate_id": req.aggregateID,
 				"payload":      req.payload,
-				"created_at":   req.createdAt.UTC().Format(time.RFC3339Nano), // Formatted using time.RFC3339Nano so nanosecond precision is preserved across network serialization.
+				// Formatted using time.RFC3339Nano so nanosecond precision is preserved across network serialization.
+				"created_at":   req.createdAt.UTC().Format(time.RFC3339Nano), 
 			},
 		})
 	}
@@ -223,7 +224,7 @@ func (p *AdaptiveBatchProducer) executePipeline(batch []publishRequest) {
 	for i, req := range batch {
 		var err error
 		if pipeErr != nil {
-			// If Exec failed globally, or this specific command failed
+			// Check if Exec failed globally, or this specific command failed
 			err = cmds[i].Err()
 			if err == nil {
 				err = pipeErr
