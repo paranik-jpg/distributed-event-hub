@@ -1,13 +1,15 @@
-# metrics.go computes the lag numbers and holds them in memory,
-# main.go serves those numbers over HTTP on /metrics,
-# and Prometheus visits /metrics to record them and plot graphs.
+# metrics.go computes the lag numbers and holds them in memory, main.go serves those numbers over HTTP on /metrics, and Prometheus visits /metrics to record them 
+# and plot graphs.
 
 global:
-  scrape_interval: 5s  # How often Prometheus asks our apps: "Give me your current numbers"
+  # How often Prometheus asks our apps: "Give me your current numbers"
+  scrape_interval: 5s  
 
 scrape_configs:
   - job_name: "distributed-event-hub"
     static_configs:
-      - targets: ["app_1:8080", "app_2:8080"] # The two Docker containers Prometheus will query
+      # The two Docker containers Prometheus will query
+      - targets: ["app_1:8080", "app_2:8080"] 
         labels:
-          group: "hub-cluster" # a grouping tag—like a category or namespace for our servers!
+          # a grouping tag—like a category or namespace for our servers!
+          group: "hub-cluster" 
