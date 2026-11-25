@@ -91,8 +91,7 @@ func (d *DLQManager) InspectAndIsolatePEL(ctx context.Context, streamKey string)
 				payload = fmt.Sprintf("%v", p)
 			}
 
-			// Enrich DLQ record with diagnostic fields:
-			// original_id, payload, attempts, failure_reason, and timestamp.
+			// Enrich DLQ record with diagnostic fields: original_id, payload, attempts, failure_reason, and timestamp.
 			dlqValues := map[string]interface{}{
 				"original_id":    entry.ID,
 				"payload":        payload,
@@ -111,8 +110,10 @@ func (d *DLQManager) InspectAndIsolatePEL(ctx context.Context, streamKey string)
 				Stream: dlqStreamKey,
 				Values: dlqValues,
 			})
-			pipe.XAck(ctx, streamKey, d.groupName, entry.ID) // Remove it from the active group's PEL
-			pipe.XDel(ctx, streamKey, entry.ID)              // Clean up the original source stream
+			// Remove it from the active group's PEL
+			pipe.XAck(ctx, streamKey, d.groupName, entry.ID) 
+			// Clean up the original source stream
+			pipe.XDel(ctx, streamKey, entry.ID)              
 
 			_, pipeErr := pipe.Exec(ctx)
 			if pipeErr != nil {
